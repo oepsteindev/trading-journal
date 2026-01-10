@@ -760,7 +760,7 @@ export default function TradingDashboard() {
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-8">
       <div className="max-w-7xl mx-auto">
         <div className="mb-8">
-          <img src="/logo.png" alt="TraderJourney" className="h-16" />
+          <img src="/logo.png" alt="TraderJourney" className="h-20 md:h-24" />
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
