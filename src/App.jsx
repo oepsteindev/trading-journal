@@ -8,12 +8,111 @@ export default function TradingDashboard() {
   const [uploadStatus, setUploadStatus] = useState({ csv: false, chart: false });
   const [viewMode, setViewMode] = useState('all');
   const [groupedStats, setGroupedStats] = useState(null);
+  const [showFormatSelector, setShowFormatSelector] = useState(false);
+  const [pendingCSVData, setPendingCSVData] = useState(null);
+  const [detectedFormat, setDetectedFormat] = useState(null);
+  const [selectedDay, setSelectedDay] = useState(null);
 
-  const parseTradingJournal = (text) => {
+  // Detect CSV format based on headers and content
+  const detectCSVFormat = (text) => {
+    const lines = text.split('\n').filter(line => line.trim());
+    if (lines.length === 0) return null;
+
+    const firstLine = lines[0].toLowerCase();
+
+    // Check for Tradovate format
+    if (firstLine.includes('symbol') &&
+        firstLine.includes('buyprice') &&
+        firstLine.includes('sellprice') &&
+        firstLine.includes('pnl') &&
+        firstLine.includes('boughttimestamp')) {
+      return 'tradovate';
+    }
+
+    // Check for TradingView format
+    if (firstLine.includes('time') && firstLine.includes('text')) {
+      return 'tradingview';
+    }
+
+    // Check for TradingView by content pattern
+    if (lines.length > 1 && lines[1].includes('has been executed at price')) {
+      return 'tradingview';
+    }
+
+    return null;
+  };
+
+  // Parse Tradovate CSV format
+  const parseTradovate = (text) => {
+    const lines = text.split('\n').filter(line => line.trim());
+    if (lines.length < 2) return [];
+
+    const headers = lines[0].split(',').map(h => h.trim());
+    const executedTrades = [];
+
+    // Find column indices
+    const indices = {
+      qty: headers.indexOf('qty'),
+      buyPrice: headers.indexOf('buyPrice'),
+      sellPrice: headers.indexOf('sellPrice'),
+      pnl: headers.indexOf('pnl'),
+      boughtTimestamp: headers.indexOf('boughtTimestamp'),
+      soldTimestamp: headers.indexOf('soldTimestamp'),
+      duration: headers.indexOf('duration')
+    };
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      // Simple CSV parsing (handles basic cases)
+      const values = line.split(',').map(v => v.trim());
+
+      const qty = parseFloat(values[indices.qty]) || 1;
+      const buyPrice = parseFloat(values[indices.buyPrice]);
+      const sellPrice = parseFloat(values[indices.sellPrice]);
+
+      // Parse PnL - remove $ and parentheses for negative values
+      let pnl = values[indices.pnl] || '0';
+      pnl = pnl.replace(/\$/g, '').replace(/[()]/g, '');
+      pnl = values[indices.pnl].includes('(') ? -parseFloat(pnl) : parseFloat(pnl);
+
+      const boughtTimestamp = values[indices.boughtTimestamp];
+      const soldTimestamp = values[indices.soldTimestamp];
+
+      // Parse duration
+      const durationStr = values[indices.duration] || '';
+      let durationMs = 0;
+      const minMatch = durationStr.match(/(\d+)min/);
+      const secMatch = durationStr.match(/(\d+)sec/);
+      if (minMatch) durationMs += parseInt(minMatch[1]) * 60000;
+      if (secMatch) durationMs += parseInt(secMatch[1]) * 1000;
+
+      // Determine trade type based on whether buy or sell price is higher
+      const entryType = buyPrice < sellPrice ? 'BUY' : 'SELL';
+
+      executedTrades.push({
+        entryTime: boughtTimestamp,
+        entryType: entryType,
+        entryPrice: buyPrice,
+        exitTime: soldTimestamp,
+        exitType: entryType === 'BUY' ? 'SELL' : 'BUY',
+        exitPrice: sellPrice,
+        size: qty,
+        pnl: pnl,
+        duration: durationMs
+      });
+    }
+
+    return executedTrades;
+  };
+
+  // Parse TradingView CSV format
+  const parseTradingView = (text) => {
     const lines = text.split('\n').filter(line => line.trim());
     const executedTrades = [];
     let currentPosition = null;
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const parts = line.split(',');
@@ -25,11 +124,11 @@ export default function TradingDashboard() {
       if (message.includes('has been executed at price')) {
         const priceMatch = message.match(/at price (\d+)/);
         if (!priceMatch) continue;
-        
+
         const price = parseFloat(priceMatch[1]);
         const unitsMatch = message.match(/for ([\d.]+) units/);
         const units = unitsMatch ? parseFloat(unitsMatch[1]) : 1;
-        
+
         let type = null;
         for (let j = i; j < Math.min(i + 5, lines.length); j++) {
           const nextLine = lines[j];
@@ -45,12 +144,12 @@ export default function TradingDashboard() {
         if (!type) continue;
 
         if (currentPosition) {
-          if ((currentPosition.type === 'BUY' && type === 'SELL') || 
+          if ((currentPosition.type === 'BUY' && type === 'SELL') ||
               (currentPosition.type === 'SELL' && type === 'BUY')) {
-            const pnl = currentPosition.type === 'BUY' 
+            const pnl = currentPosition.type === 'BUY'
               ? (price - currentPosition.entryPrice) * units
               : (currentPosition.entryPrice - price) * units;
-            
+
             executedTrades.unshift({
               entryTime: currentPosition.timestamp,
               entryType: currentPosition.type,
@@ -70,6 +169,16 @@ export default function TradingDashboard() {
       }
     }
     return executedTrades;
+  };
+
+  // Main parsing function that routes to appropriate parser
+  const parseCSV = (text, format) => {
+    if (format === 'tradovate') {
+      return parseTradovate(text);
+    } else if (format === 'tradingview') {
+      return parseTradingView(text);
+    }
+    return [];
   };
 
   const calculateStats = (trades) => {
@@ -148,17 +257,41 @@ export default function TradingDashboard() {
     if (file) {
       const reader = new FileReader();
       reader.onload = (event) => {
-        const parsedTrades = parseTradingJournal(event.target.result);
-        setTrades(parsedTrades);
-        setStats(calculateStats(parsedTrades));
-        setGroupedStats({
-          day: groupTradesByPeriod(parsedTrades, 'day'),
-          week: groupTradesByPeriod(parsedTrades, 'week'),
-          month: groupTradesByPeriod(parsedTrades, 'month')
-        });
-        setUploadStatus(prev => ({ ...prev, csv: true }));
+        const csvText = event.target.result;
+        const format = detectCSVFormat(csvText);
+
+        if (format) {
+          // Auto-detected format successfully
+          processCSVData(csvText, format);
+          setDetectedFormat(format);
+        } else {
+          // Could not detect format, show manual selector
+          setPendingCSVData(csvText);
+          setShowFormatSelector(true);
+        }
       };
       reader.readAsText(file);
+    }
+  };
+
+  const processCSVData = (csvText, format) => {
+    const parsedTrades = parseCSV(csvText, format);
+    setTrades(parsedTrades);
+    setStats(calculateStats(parsedTrades));
+    setGroupedStats({
+      day: groupTradesByPeriod(parsedTrades, 'day'),
+      week: groupTradesByPeriod(parsedTrades, 'week'),
+      month: groupTradesByPeriod(parsedTrades, 'month')
+    });
+    setUploadStatus(prev => ({ ...prev, csv: true }));
+    setShowFormatSelector(false);
+    setPendingCSVData(null);
+  };
+
+  const handleManualFormatSelection = (format) => {
+    if (pendingCSVData) {
+      processCSVData(pendingCSVData, format);
+      setDetectedFormat(format);
     }
   };
 
@@ -205,14 +338,16 @@ export default function TradingDashboard() {
     const lastDay = new Date(year, month, 0);
     const daysInMonth = lastDay.getDate();
     const startDay = firstDay.getDay(); // 0 = Sunday
-    
+
     // Create a map of day -> trades for this month
     const dayTradesMap = {};
+    const dayKeyToDateString = {}; // Maps day number to full date string (YYYY-MM-DD)
     monthData.trades.forEach(trade => {
       const tradeDate = new Date(trade.exitTime);
       const dayKey = tradeDate.getDate();
       if (!dayTradesMap[dayKey]) {
         dayTradesMap[dayKey] = [];
+        dayKeyToDateString[dayKey] = `${year}-${String(month).padStart(2, '0')}-${String(dayKey).padStart(2, '0')}`;
       }
       dayTradesMap[dayKey].push(trade);
     });
@@ -221,10 +356,13 @@ export default function TradingDashboard() {
     const dayStatsMap = {};
     Object.keys(dayTradesMap).forEach(day => {
       const dayTrades = dayTradesMap[day];
-      const dayPnL = dayTrades.reduce((sum, t) => sum + t.pnl, 0);
-      const wins = dayTrades.filter(t => t.pnl > 0).length;
-      const winRate = (wins / dayTrades.length) * 100;
-      dayStatsMap[day] = { pnl: dayPnL, winRate, trades: dayTrades.length };
+      const fullStats = calculateStats(dayTrades);
+      dayStatsMap[day] = {
+        pnl: fullStats.totalPnL,
+        winRate: fullStats.winRate,
+        trades: fullStats.totalTrades,
+        fullStats: fullStats
+      };
     });
 
     const weeks = [];
@@ -299,15 +437,16 @@ export default function TradingDashboard() {
 
                   const dayStats = dayStatsMap[day];
                   const hasData = dayStats !== undefined;
-                  
+
                   return (
                     <div
                       key={dayIdx}
+                      onClick={() => hasData && setSelectedDay({ dateKey: dayKeyToDateString[day], trades: dayTradesMap[day], stats: dayStats.fullStats })}
                       className={`aspect-square rounded-lg p-2 border transition-all ${
                         hasData
                           ? dayStats.pnl >= 0
-                            ? 'bg-emerald-500/20 border-emerald-500/40 hover:bg-emerald-500/30'
-                            : 'bg-rose-500/20 border-rose-500/40 hover:bg-rose-500/30'
+                            ? 'bg-emerald-500/20 border-emerald-500/40 hover:bg-emerald-500/30 cursor-pointer'
+                            : 'bg-rose-500/20 border-rose-500/40 hover:bg-rose-500/30 cursor-pointer'
                           : 'bg-slate-700/20 border-slate-600/30'
                       }`}
                     >
@@ -510,15 +649,21 @@ export default function TradingDashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           <div className="bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700/50">
             <label className={`flex flex-col items-center justify-center cursor-pointer p-8 rounded-xl border-2 border-dashed transition-all ${
-              uploadStatus.csv 
-                ? 'border-emerald-500/50 bg-emerald-500/10' 
+              uploadStatus.csv
+                ? 'border-emerald-500/50 bg-emerald-500/10'
                 : 'border-slate-600/50 hover:border-slate-500/50'
             }`}>
               <Upload className={`w-12 h-12 mb-4 ${uploadStatus.csv ? 'text-emerald-400' : 'text-gray-400'}`} />
               <span className="text-lg font-medium text-white mb-1">
                 {uploadStatus.csv ? `✓ ${trades.length} trades loaded` : 'Upload CSV Journal'}
               </span>
-              <span className="text-sm text-gray-400">{uploadStatus.csv ? 'CSV uploaded successfully' : 'TradingView export'}</span>
+              <span className="text-sm text-gray-400">
+                {uploadStatus.csv
+                  ? detectedFormat
+                    ? `${detectedFormat === 'tradovate' ? 'Tradovate' : 'TradingView'} format detected`
+                    : 'CSV uploaded successfully'
+                  : 'TradingView or Tradovate export'}
+              </span>
               <input type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" />
             </label>
           </div>
@@ -539,6 +684,49 @@ export default function TradingDashboard() {
           </div>
         </div>
 
+        {showFormatSelector && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-slate-800 rounded-2xl p-8 border border-slate-700 max-w-md w-full shadow-2xl">
+              <h2 className="text-2xl font-semibold text-white mb-4">Select CSV Format</h2>
+              <p className="text-gray-400 mb-6">We couldn't automatically detect your CSV format. Please select your trading platform:</p>
+
+              <div className="space-y-3">
+                <button
+                  onClick={() => handleManualFormatSelection('tradingview')}
+                  className="w-full bg-slate-700/50 hover:bg-slate-700 text-white p-4 rounded-xl border border-slate-600 transition-all flex items-center justify-between group"
+                >
+                  <div className="text-left">
+                    <div className="font-semibold text-lg">TradingView</div>
+                    <div className="text-sm text-gray-400">Time, Text format</div>
+                  </div>
+                  <div className="text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
+                </button>
+
+                <button
+                  onClick={() => handleManualFormatSelection('tradovate')}
+                  className="w-full bg-slate-700/50 hover:bg-slate-700 text-white p-4 rounded-xl border border-slate-600 transition-all flex items-center justify-between group"
+                >
+                  <div className="text-left">
+                    <div className="font-semibold text-lg">Tradovate</div>
+                    <div className="text-sm text-gray-400">Performance export format</div>
+                  </div>
+                  <div className="text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
+                </button>
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowFormatSelector(false);
+                  setPendingCSVData(null);
+                }}
+                className="mt-6 w-full text-gray-400 hover:text-white text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {chartImage && (
           <div className="mb-8 bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700/50">
             <h2 className="text-xl font-semibold text-white mb-4">Trading Chart</h2>
@@ -558,10 +746,13 @@ export default function TradingDashboard() {
               ].map(([mode, label, gradient]) => (
                 <button
                   key={mode}
-                  onClick={() => setViewMode(mode)}
+                  onClick={() => {
+                    setViewMode(mode);
+                    setSelectedDay(null);
+                  }}
                   className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    viewMode === mode 
-                      ? `bg-gradient-to-r ${gradient} text-white shadow-lg` 
+                    viewMode === mode
+                      ? `bg-gradient-to-r ${gradient} text-white shadow-lg`
                       : 'bg-slate-700/50 text-gray-300 hover:bg-slate-700 border border-slate-600/50'
                   }`}
                 >
@@ -602,14 +793,28 @@ export default function TradingDashboard() {
 
         {stats && viewMode === 'month' && groupedStats && groupedStats.month && (
           <div className="space-y-8">
-            {Object.keys(groupedStats.month).map((monthKey) => {
-              const monthData = groupedStats.month[monthKey];
-              return (
-                <div key={monthKey}>
-                  {renderMonthCalendar(monthKey, monthData)}
+            {selectedDay ? (
+              <div>
+                <button
+                  onClick={() => setSelectedDay(null)}
+                  className="mb-6 px-4 py-2 bg-slate-700/50 hover:bg-slate-700 text-white rounded-lg border border-slate-600 transition-all flex items-center gap-2"
+                >
+                  <span>←</span> Back to Calendar
+                </button>
+                <div className="bg-slate-800/30 backdrop-blur rounded-xl p-8 border-2 border-slate-700/50">
+                  {renderStatsSection(selectedDay.stats, formatPeriodLabel(selectedDay.dateKey, 'day'), selectedDay.trades)}
                 </div>
-              );
-            })}
+              </div>
+            ) : (
+              Object.keys(groupedStats.month).map((monthKey) => {
+                const monthData = groupedStats.month[monthKey];
+                return (
+                  <div key={monthKey}>
+                    {renderMonthCalendar(monthKey, monthData)}
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
 
