@@ -18,6 +18,14 @@ export default function TradingDashboard() {
     const lines = text.split('\n').filter(line => line.trim());
     if (lines.length === 0) return null;
 
+    const textLower = text.toLowerCase();
+
+    // Check for ThinkOrSwim format
+    if (textLower.includes('account statement for') &&
+        textLower.includes('account trade history')) {
+      return 'thinkorswim';
+    }
+
     const firstLine = lines[0].toLowerCase();
 
     // Check for Tradovate format
@@ -107,6 +115,116 @@ export default function TradingDashboard() {
     return executedTrades;
   };
 
+  // Parse ThinkOrSwim CSV format
+  const parseThinkOrSwim = (text) => {
+    const lines = text.split('\n').filter(line => line.trim());
+    const executedTrades = [];
+
+    // Find the "Account Trade History" section
+    let tradeHistoryIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes('account trade history')) {
+        tradeHistoryIndex = i;
+        break;
+      }
+    }
+
+    if (tradeHistoryIndex === -1) return [];
+
+    // Find the header line (next non-empty line after section title)
+    let headerIndex = -1;
+    for (let i = tradeHistoryIndex + 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line && line.includes('Exec Time')) {
+        headerIndex = i;
+        break;
+      }
+    }
+
+    if (headerIndex === -1) return [];
+
+    const headers = lines[headerIndex].split(',').map(h => h.trim());
+    const indices = {
+      execTime: headers.findIndex(h => h.toLowerCase().includes('exec time')),
+      side: headers.findIndex(h => h.toLowerCase() === 'side'),
+      qty: headers.findIndex(h => h.toLowerCase() === 'qty'),
+      symbol: headers.findIndex(h => h.toLowerCase() === 'symbol'),
+      price: headers.findIndex(h => h.toLowerCase() === 'price' && !h.toLowerCase().includes('net')),
+      netPrice: headers.findIndex(h => h.toLowerCase().includes('net price'))
+    };
+
+    // Parse trade data - group by pairs (entry/exit)
+    const trades = [];
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith('Account Summary') || line.includes('Total')) break;
+
+      const values = line.split(',').map(v => v.trim());
+      if (values.length < headers.length) continue;
+
+      const execTime = values[indices.execTime];
+      const side = values[indices.side];
+      const qty = parseFloat(values[indices.qty]) || 0;
+      const symbol = values[indices.symbol];
+      const price = parseFloat(values[indices.price]) || 0;
+
+      if (!execTime || !side || !qty || !symbol || !price) continue;
+
+      trades.push({
+        execTime,
+        side: side.toUpperCase(),
+        qty,
+        symbol,
+        price
+      });
+    }
+
+    // Match buy/sell pairs to create complete trades
+    const openPositions = {};
+
+    trades.forEach(trade => {
+      const key = trade.symbol;
+
+      if (!openPositions[key]) {
+        // Opening position
+        openPositions[key] = {
+          entryTime: trade.execTime,
+          entryType: trade.side,
+          entryPrice: trade.price,
+          size: trade.qty,
+          symbol: trade.symbol
+        };
+      } else {
+        // Closing position
+        const position = openPositions[key];
+        const opposingSide = (position.entryType === 'BUY' && trade.side === 'SELL') ||
+                            (position.entryType === 'SELL' && trade.side === 'BUY');
+
+        if (opposingSide) {
+          const pnl = position.entryType === 'BUY'
+            ? (trade.price - position.entryPrice) * position.size
+            : (position.entryPrice - trade.price) * position.size;
+
+          executedTrades.push({
+            entryTime: position.entryTime,
+            entryType: position.entryType,
+            entryPrice: position.entryPrice,
+            exitTime: trade.execTime,
+            exitType: trade.side,
+            exitPrice: trade.price,
+            size: position.size,
+            pnl: pnl,
+            duration: 0 // ThinkOrSwim doesn't provide duration
+          });
+
+          delete openPositions[key];
+        }
+      }
+    });
+
+    return executedTrades.reverse(); // Most recent first
+  };
+
   // Parse TradingView CSV format
   const parseTradingView = (text) => {
     const lines = text.split('\n').filter(line => line.trim());
@@ -177,6 +295,8 @@ export default function TradingDashboard() {
       return parseTradovate(text);
     } else if (format === 'tradingview') {
       return parseTradingView(text);
+    } else if (format === 'thinkorswim') {
+      return parseThinkOrSwim(text);
     }
     return [];
   };
@@ -660,9 +780,9 @@ export default function TradingDashboard() {
               <span className="text-sm text-gray-400">
                 {uploadStatus.csv
                   ? detectedFormat
-                    ? `${detectedFormat === 'tradovate' ? 'Tradovate' : 'TradingView'} format detected`
+                    ? `${detectedFormat === 'tradovate' ? 'Tradovate' : detectedFormat === 'thinkorswim' ? 'ThinkOrSwim' : 'TradingView'} format detected`
                     : 'CSV uploaded successfully'
-                  : 'TradingView or Tradovate export'}
+                  : 'TradingView, Tradovate, or ThinkOrSwim export'}
               </span>
               <input type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" />
             </label>
@@ -709,6 +829,17 @@ export default function TradingDashboard() {
                   <div className="text-left">
                     <div className="font-semibold text-lg">Tradovate</div>
                     <div className="text-sm text-gray-400">Performance export format</div>
+                  </div>
+                  <div className="text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
+                </button>
+
+                <button
+                  onClick={() => handleManualFormatSelection('thinkorswim')}
+                  className="w-full bg-slate-700/50 hover:bg-slate-700 text-white p-4 rounded-xl border border-slate-600 transition-all flex items-center justify-between group"
+                >
+                  <div className="text-left">
+                    <div className="font-semibold text-lg">ThinkOrSwim</div>
+                    <div className="text-sm text-gray-400">Account Statement format</div>
                   </div>
                   <div className="text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
                 </button>
