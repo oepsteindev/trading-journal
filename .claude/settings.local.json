@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npm start)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd multi-platform CSV support and clickable calendar days\n\nFeatures added:\n- Auto-detect CSV format \\(TradingView and Tradovate\\)\n- Manual format selector fallback modal\n- Tradovate Performance CSV parser with full support\n- Clickable calendar days in month view\n- Day detail view with back navigation\n- Netlify deployment configuration\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(tree:*)",
+      "Bash(git init:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)"
+    ]
+  }
+}
